@@ -2,11 +2,22 @@ import express, { Request, Response, Express } from 'express';
 import { Database } from './Database';
 import { DBConfig } from './dbConfig';
 
-interface RouteConfig {
+interface QueryConfig {
+  query: string;
+  params?: (req: Request) => any[];
+}
+
+interface FunctionConfig {
+  funcName: string;
+  params?: (req: Request) => any[];
+}
+
+type RouteConfig = {
   route: string;
   method: 'GET' | 'POST';
-  queries: { query: string, params?: any[] }[];
-}
+  queries?: QueryConfig[];
+  functions?: FunctionConfig[];
+};
 
 export class App {
   private app: Express;
@@ -16,6 +27,9 @@ export class App {
   constructor(dbConfig: DBConfig) {
     this.app = express();
     this.database = new Database(dbConfig);
+
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
   }
 
   async initialize() {
@@ -29,28 +43,30 @@ export class App {
 
   private setupRoutes() {
     this.routes.forEach(routeConfig => {
+      const handler = async (req: Request, res: Response) => {
+        try {
+          if (routeConfig.queries) {
+            const results = await Promise.all(
+              routeConfig.queries.map(q => this.database.runQuery(q.query, q.params ? q.params(req) : []))
+            );
+            res.json(results.map(result => result.rows));
+          } else if (routeConfig.functions) {
+            const results = await Promise.all(
+              routeConfig.functions.map(f => this.database.callFunction(f.funcName, f.params ? f.params(req) : []))
+            );
+            res.json(results);
+          } else {
+            res.status(400).send('No queries or functions provided');
+          }
+        } catch (err) {
+          res.status(500).send('Error retrieving data');
+        }
+      };
+
       if (routeConfig.method === 'GET') {
-        this.app.get(routeConfig.route, async (req: Request, res: Response) => {
-          try {
-            const results = await Promise.all(
-              routeConfig.queries.map(q => this.database.runQuery(q.query, q.params))
-            );
-            res.json(results.map(result => result.rows));
-          } catch (err) {
-            res.status(500).send('Error retrieving data');
-          }
-        });
+        this.app.get(routeConfig.route, handler);
       } else if (routeConfig.method === 'POST') {
-        this.app.post(routeConfig.route, async (req: Request, res: Response) => {
-          try {
-            const results = await Promise.all(
-              routeConfig.queries.map(q => this.database.runQuery(q.query, q.params))
-            );
-            res.json(results.map(result => result.rows));
-          } catch (err) {
-            res.status(500).send('Error retrieving data');
-          }
-        });
+        this.app.post(routeConfig.route, handler);
       }
     });
   }
